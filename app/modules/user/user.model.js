@@ -55,7 +55,7 @@ module.exports = (sequelize, DataTypes, Sequelize) => {
 
       role: {
         type: DataTypes.STRING,
-        defaultValue: "admin",
+        defaultValue: "user",
         validate: {
           isIn: [['user', 'admin', 'super_admin']],
         },

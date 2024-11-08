@@ -11,34 +11,48 @@ const Product = db.product;
 
 const insertIntoDB = async (data) => {
   try {
-    const {buyer_name, created_date, quantity, rate, paid_amount, remarks, productId} = data;
+    const { buyer_name, created_date, quantity, rate, paid_amount, remarks, buyerId, productId } = data;
 
     // Retrieve the product to get the current stock
     const product = await Product.findOne({
-      where: {
-        Id: productId
-      }
+      where: { Id: productId }
     });
 
     if (!product) {
       throw new Error('Product not found');
     }
 
-    const price = parseInt(rate*quantity)
-    const due_amount = parseInt(price-paid_amount)
+    const price = parseInt(rate * quantity);
+    const due_amount = parseInt(price - paid_amount);
+
     // Create the sale data
     const saleData = {
       product_name: product.name,
       buyer_name,
-      transaction_date:new Date(created_date),
+      transaction_date: new Date(created_date),
       quantity,
       rate,
       price,
       paid_amount,
       due_amount,
       remarks,
+      buyerId,
       productId,
     };
+
+    // Update the product stock after sale
+    if (parseInt(product.stock) < parseInt(quantity)) {
+      throw new Error('Insufficient stock');
+    }
+
+    const updatedStock = product.stock - parseInt(quantity);
+
+    await Product.update(
+      { stock: updatedStock },
+      {
+        where: { Id: productId } // Ensure this matches your model definition
+      }
+    );
 
     // Insert the sale record into the Sale table
     const result = await Sale.create(saleData);
@@ -58,24 +72,21 @@ const insertIntoDB = async (data) => {
     // Insert the accounting data
     await Accounting.create(accountingData);
 
-    // Subtract the sold quantity from the product stock
-    const updatedStock = product.stock - parseInt(quantity);
+    // Calculate the total due amount of the buyer and update in the Buyer table
+    const saleDueAmount = await Sale.findAll({
+      where: { buyerId: result.buyerId }
+    });
 
-    if (updatedStock < 0) {
-      throw new Error('Insufficient stock');
-    }
+    let totalBuyerDueAmount = 0;
+    saleDueAmount.forEach((sale) => {
+      totalBuyerDueAmount += parseFloat(sale.due_amount);
+    });
 
-    // Update the product stock
-    await Product.update(
-      { stock: updatedStock },
-      {
-        where: {
-          Id: productId, // Ensure this matches your model definition
-        }
-      }
+    // Update the Buyer's total due amount with a where clause
+    await Buyer.update(
+      { due_amount: totalBuyerDueAmount },  // Corrected update object
+      { where: { Id: buyerId } }            // Added `where` clause to specify the buyer
     );
-
-    console.log(`Product stock updated. New stock: ${updatedStock}`);
 
     return result; // Return the newly created sale
   } catch (error) {
@@ -83,6 +94,7 @@ const insertIntoDB = async (data) => {
     throw error; // Optionally re-throw the error for further handling
   }
 };
+
 
 
 
@@ -171,7 +183,7 @@ const deleteIdFromDB = async (id) => {
     // If Sale record is deleted, proceed to delete the related accounting record
     const accountingResult = await Accounting.destroy({
       where: {
-        saleId: id,
+        saleId: existingSale.Id,
       },
     });
 
@@ -183,6 +195,24 @@ const deleteIdFromDB = async (id) => {
     });
 
 
+    const saleDueAmount =  await Sale.findAll({
+      where:{
+        buyerId: existingSale.buyerId
+      }
+    })
+    
+    
+    let totalBuyerDueAmount = 0
+    
+    saleDueAmount.forEach(sale => {
+      totalBuyerDueAmount += sale.due_amount
+    });
+    
+    
+    await Buyer.update(totalBuyerDueAmount,{
+      Id: existingSale.buyerId
+    })
+
     console.log(accountingResult, saleResult)
     
     return { accountingResult, saleResult };
@@ -192,32 +222,29 @@ const deleteIdFromDB = async (id) => {
 
 
 const updateOneFromDB = async (id, payload) => {
- 
-  const {buyer_name, created_date, quantity, rate, paid_amount, remarks, productId} = payload;
+  const { buyer_name, created_date, quantity, rate, paid_amount, remarks, buyerId, productId } = payload;
 
+  // Fetch the existing sale record to get the current quantity before updating
+  const existingSale = await Sale.findOne({ where: { Id: id } });
+  if (!existingSale) {
+    throw new Error('Sale record not found');
+  }
 
-   // Fetch the existing purchase record to get the current quantity before updating
-   const existingSale = await Sale.findOne({ where: { Id: id } });
-   if (!existingSale) {
-     throw new Error('Sale record not found');
-   }
- 
-   // Calculate the change in quantity (difference)
-   const quantityDifference = parseInt(quantity) - parseInt(existingSale.quantity);
- 
+  // Calculate the change in quantity (difference)
+  const quantityDifference = parseInt(quantity) - parseInt(existingSale.quantity);
 
-  const saleName = await Product.findOne({
-    where:{
-      Id: productId
-    }
-  })
+  // Get product name for saleData
+  const saleName = await Product.findOne({ where: { Id: productId } });
+  if (!saleName) {
+    throw new Error('Product not found');
+  }
 
-  const price = parseInt(rate*quantity)
-  const due_amount = parseInt(price-paid_amount)
+  const price = parseInt(rate * quantity);
+  const due_amount = parseInt(price - paid_amount);
 
   const saleData = {
-    product_name:saleName.name,
-    transaction_date:new Date(created_date),
+    product_name: saleName.name,
+    transaction_date: new Date(created_date),
     buyer_name,
     quantity,
     rate,
@@ -225,81 +252,60 @@ const updateOneFromDB = async (id, payload) => {
     paid_amount,
     due_amount,
     remarks,
-    productId,   
+    productId,
+    buyerId,
+  };
+
+  // Adjust the stock in the Product table
+  const product = await Product.findOne({ where: { Id: productId } });
+  if (!product) {
+    throw new Error('Product not found');
   }
- 
-  const result = await Sale.update(saleData,{
-    where:{
-      Id:id
-    }
-  })
 
+  if (parseInt(product.stock) < parseInt(quantity)) {
+    throw new Error('Insufficient stock');
+  }
 
-      // Calculate the total transaction amount
-      const totalTransactionAmount = Number(paid_amount) + Number(due_amount);
+  const updatedStock = parseInt(product.stock) - quantityDifference;
+  await Product.update({ stock: updatedStock }, { where: { Id: productId } });
 
-      // Prepare accounting data
-      const accountingData = {
-        transaction_amount: totalTransactionAmount,
-        remarks: remarks,
-        saleId: id, // Assuming this is the buyer's ID
-      };
+  // Update the Sale record
+  const result = await Sale.update(saleData, { where: { Id: id } });
 
-    await Accounting.update(accountingData,{
-      where: {
-        saleId:id
-      }
-    });
+  // Calculate the total transaction amount
+  const totalTransactionAmount = Number(paid_amount) + Number(due_amount);
 
+  // Prepare accounting data
+  const accountingData = {
+    transaction_date: new Date(created_date),
+    transaction_type: 'Sale',
+    transaction_amount: totalTransactionAmount,
+    remarks,
+    saleId: id, // Assuming this is the buyer's ID
+  };
 
-     // Retrieve all purchases to calculate due amounts per supplier
-   const sale = await Sale.findAll();
-   const totalDueBySupplier = {};
- 
-   sale.forEach((item) => {
-     const buyerId = item.buyerId;
-     const dueAmount = parseFloat(item.due_amount);
- 
-     // Initialize the supplier's total due amount if it doesn't exist
-     if (!totalDueBySupplier[buyerId]) {
-       totalDueBySupplier[buyerId] = 0;
-     }
- 
-     // Accumulate the due amount
-     totalDueBySupplier[buyerId] += dueAmount;
-   });
- 
-   // Update each supplier's due amount
-   for (const [buyerId, dueAmount] of Object.entries(totalDueBySupplier)) {
-     console.log(`Supplier ID: ${buyerId}, Due Amount: ${dueAmount}`);
-     
-   
-       await Buyer.update(
-         { due_amount: dueAmount }, // Pass the update object
-         {
-           where: {
-             Id: buyerId, // Match by the Id
-           },
-         }
-       );
-     
-   }
+  // Update the Accounting table
+  await Accounting.update(accountingData, { where: { saleId: id } });
 
+  // Retrieve all sales for the buyer to calculate total due amount
+  const salesDueAmount = await Sale.findAll({
+    where: { buyerId: buyerId }
+  });
 
- // Adjust the stock in the Product table
- const product = await Product.findOne({ where: { id: productId } });
- if (!product) {
-   throw new Error('Product not found');
- }
+  let totalBuyerDueAmount = 0;
+  salesDueAmount.forEach((sale) => {
+    totalBuyerDueAmount += parseFloat(sale.due_amount);
+  });
 
- const updatedStock = product.stock - quantityDifference;
- await Product.update({ stock: updatedStock }, { where: { id: productId } });
+  // Update the Buyer's total due amount
+  await Buyer.update(
+    { due_amount: totalBuyerDueAmount },  // Corrected update object
+    { where: { Id: buyerId } }            // Added `where` clause to specify which buyer
+  );
 
- console.log(`Product stock updated to: ${updatedStock}`);
-
-  return result
-
+  return result;
 };
+
 
 
  const SaleService = { 

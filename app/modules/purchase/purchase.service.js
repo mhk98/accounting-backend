@@ -9,7 +9,7 @@ const Product = db.product;
 const Sale = db.sale;
 
 const insertIntoDB = async (data) => {
-  const {supplier_name, quantity, rate, paid_amount, remarks, productId, created_date} = data;
+  const {supplier_name, quantity, rate, paid_amount, remarks, supplierId, productId, created_date} = data;
 
   const productName = await Product.findOne({
     where:{
@@ -30,6 +30,7 @@ const insertIntoDB = async (data) => {
     paid_amount,
     due_amount,
     remarks,
+    supplierId,
     productId,   
   }
 
@@ -52,38 +53,22 @@ const insertIntoDB = async (data) => {
   // Insert the accounting data
   await Accounting.create(accountingData);
 
-  // Retrieve all purchases to calculate due amounts per supplier
-  const purchases = await Purchase.findAll();
-  const totalDueBySupplier = {};
 
-  purchases.forEach((item) => {
-    const supplierId = item.supplierId;
-    const dueAmount = parseFloat(item.due_amount);
-
-    // Initialize the supplier's total due amount if it doesn't exist
-    if (!totalDueBySupplier[supplierId]) {
-      totalDueBySupplier[supplierId] = 0;
-    }
-
-    // Accumulate the due amount
-    totalDueBySupplier[supplierId] += dueAmount;
-  });
-
-  // Update each supplier's due amount
-  for (const [supplierId, dueAmount] of Object.entries(totalDueBySupplier)) {
-    console.log(`Supplier ID: ${supplierId}, Due Amount: ${dueAmount}`);
-    
+    // Retrieve all purchase for the supplier to calculate total due amount
+    const purchaseDueAmount = await Purchase.findAll({
+      where: { supplierId: result.supplierId }
+    });
   
-      await Supplier.update(
-        { due_amount: dueAmount }, // Pass the update object
-        {
-          where: {
-            Id: supplierId, // Match by the Id
-          },
-        }
-      );
-    
-  }
+    let totalSupplierDueAmount = 0;
+    purchaseDueAmount.forEach((purchase) => {
+      totalSupplierDueAmount += parseFloat(purchase.due_amount);
+    });
+  
+    // Update the Buyer's total due amount
+    await Supplier.update(
+      { due_amount: totalSupplierDueAmount },  // Corrected update object
+      { where: { Id: supplierId } }            // Added `where` clause to specify which buyer
+    );
 
 
   const totalQuantityOfPurchase = await Purchase.findAll({
@@ -292,7 +277,24 @@ const updateOneFromDB = async (id, payload) => {
   const updatedStock = product.stock + quantityDifference;
   await Product.update({ stock: updatedStock }, { where: { id: productId } });
 
-  console.log(`Product stock updated to: ${updatedStock}`);
+  
+  const supplierDueAmount =  await Purchase.findAll({
+    where:{
+      supplierId: existingPurchase.supplierId
+    }
+  })
+  
+  
+  let totalSupplierDueAmount = 0
+  
+  supplierDueAmount.forEach(purchase => {
+    totalSupplierDueAmount += purchase.due_amount
+  });
+  
+  
+  await Supplier.update({due_amount:totalSupplierDueAmount},{
+    Id: existingSale.supplierId
+  })
 
   return result;
 };
